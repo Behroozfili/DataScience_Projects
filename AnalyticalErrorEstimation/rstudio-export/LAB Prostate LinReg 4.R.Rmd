@@ -1,0 +1,115 @@
+---
+title: "LAB Prostate LinReg 4.R Focus on the description of the shrinkage meth-
+ods Ridge and Lasso."
+author: "Behrooz Filzadeh"
+date: "2025-05-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+# Analyse der Prostata-Daten mit Ridge und Lasso Regression
+
+# ====== Bibliotheken laden ======
+# Diese Pakete brauchen wir für Datenanalyse, Visualisierung und Modellierung.
+library(data.table)
+library(ggplot2)
+library(leaps)        # Für Auswahl von Variablen (Subset Selection)
+library(glmnet)       # Für Ridge und Lasso Regression
+library(corrplot)
+library(GGally)
+library(psych)
+library(DataExplorer)
+
+# ====== Daten laden ======
+# Wir laden die Prostata-Daten und machen daraus ein data.table.
+prostateData <- read.table(file="prostate_data.csv")
+prostateData <- as.data.table(prostateData)
+table(prostateData$train)  # Zeigt wie viele Trainings- und Testdaten es gibt
+```
+Erklärung:
+Hier laden wir die Daten aus einer Datei. Die Daten beinhalten Informationen über Prostata-Krebs. Wir schauen auch, wie viele Daten in Trainings- und Testgruppe sind.
+```{r}
+# ====== Aufteilen in Trainings- und Testdaten ======
+# Wir trennen die Daten in Trainings- und Testsets.
+prostateData_train <- prostateData[train==TRUE]
+prostateData_test <- prostateData[train==FALSE]
+prostateData_train$train <- NULL
+prostateData_test$train <- NULL
+```
+Erklärung:
+Wir trennen die Daten: ein Teil zum Trainieren des Modells, ein anderer zum Testen. Die Spalte train brauchen wir danach nicht mehr.
+```{r}
+# ====== Standardisieren der Prädiktoren ======
+# Standardisieren heißt: alle Variablen haben gleichen Maßstab (Mittelwert 0, SD 1).
+# Das ist wichtig für Ridge und Lasso Regression.
+
+# Trainingsdaten standardisieren
+prostateData_train_scaled <- scale(prostateData_train[, 1:8])
+prostateData_train_scaled <- as.data.table(prostateData_train_scaled)
+prostateData_train_scaled[,lpsa:=prostateData_train$lpsa]
+
+# Testdaten auch standardisieren (wir nehmen hier gleiche Methode)
+prostateData_test_scaled <- scale(prostateData_test[, 1:8])
+prostateData_test_scaled <- as.data.table(prostateData_test_scaled)
+prostateData_test_scaled[,lpsa:=prostateData_test$lpsa]
+```
+Erklärung:
+Wir bringen alle numerischen Variablen auf dieselbe Skala. Das ist nötig, weil Ridge und Lasso sensibel auf verschiedene Größenordnungen sind.
+```{r}
+# ====== Ridge Regression ======
+# Ridge benutzt alpha = 0 (kein Lasso-Effekt).
+# Es schrumpft die Koeffizienten, aber setzt sie nicht auf 0.
+# Ziel: Überanpassung (Overfitting) vermeiden und Stabilität erhöhen.
+
+grid <- round(10^seq(3, -4, length = 100),2)
+x <- as.matrix(prostateData_train_scaled[,1:8])
+y <- prostateData_train_scaled$lpsa
+
+ridgeModel <- glmnet(x, y, alpha = 0, standardize = FALSE, intercept = TRUE, lambda = grid)
+
+plot(ridgeModel)  # Zeigt wie die Koeffizienten sich mit Lambda ändern
+print(ridgeModel)
+coef(ridgeModel, s = 0.21)
+
+predict_model3 <- predict(ridgeModel, as.matrix(prostateData_test_scaled[,1:8]), s = 0.21)
+mse_model3 <- mean((predict_model3 - prostateData_test_scaled$lpsa)^2)
+mse_model3
+
+sErr <- sqrt(var((prostateData_test_scaled$lpsa - predict_model3)^2) / 30)
+sErr
+```
+Erklärung:
+Ridge Regression hilft uns, ein stabileres Modell zu machen, besonders wenn es viele Prädiktoren gibt. Mit Lambda können wir steuern, wie stark die Koeffizienten "geschrumpft" werden. Hier testen wir das Modell auf Testdaten und berechnen den Fehler (MSE).
+
+```{r}
+# ====== Lasso Regression ======
+# Lasso benutzt alpha = 1 (volle Lasso-Penalisierung).
+# Es kann manche Koeffizienten auf genau 0 setzen => Variable-Selection.
+# Gut, wenn man nur wichtige Variablen behalten will.
+
+grid <- 10^seq(3, -4, length = 100)
+x <- as.matrix(prostateData_train_scaled[,1:8])
+y <- prostateData_train_scaled$lpsa
+
+lassoModel <- glmnet(x, y, alpha = 1, standardize = FALSE, intercept = TRUE)
+
+plot(lassoModel)  # Zeigt wie viele Koeffizienten auf 0 gehen
+print(lassoModel)
+coef(lassoModel, s = 0.3)
+
+predict_model4 <- predict(lassoModel, as.matrix(prostateData_test_scaled[,1:8]), s = 0.5)
+mse_model4 <- mean((predict_model3 - prostateData_test_scaled$lpsa)^2)  # Achtung: predict_model3 statt 4!
+mse_model4
+
+sErr <- sqrt(var((prostateData_test_scaled$lpsa - predict_model4)^2) / 30)
+sErr
+```
+Erklärung:
+Lasso ist sehr hilfreich, wenn wir viele unnötige Variablen haben. Es hilft, ein sparsames Modell zu bauen. Der Unterschied zu Ridge ist, dass es wirklich Variablen entfernt.
+Hinweis: In der Zeile mse_model4 wird fälschlich predict_model3 verwendet – sollte predict_model4 sein.
+
+
+

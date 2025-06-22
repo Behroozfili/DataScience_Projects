@@ -1,0 +1,207 @@
+---
+title: "Visualisierung der Bayes-Klassifikationsgrenze und Wahrscheinlichkeitsfläche"
+format: html 
+editor: source
+---
+Der Datensatz ESL.mixture ist ein künstlich erzeugter 2D-Datensatz zur Veranschaulichung von Klassifikationsalgorithmen. Er besteht aus zwei Klassen, die aus einer Mischung von Gaußschen Verteilungen stammen. Ziel ist es, die Entscheidungsgrenzen verschiedener Modelle sichtbar zu machen.
+
+```{r setup, include=FALSE}
+# Load required libraries
+library(plotly)
+
+# Load dataset
+load("ESL.mixture.rda")
+dat <- ESL.mixture
+
+# Pick a consistent z-value for the plane (use 0.5)
+plane_z_value <- 0.5
+
+# Initialize fig object
+fig <- plot_ly()
+```
+```{r}
+str(dat)
+
+```
+
+
+---
+
+## Schritt 1: Hinzufügen der Wahrscheinlichkeitsoberfläche
+
+In diesem Schritt visualisieren wir die geschätzte Wahrscheinlichkeitsoberfläche.\
+Diese Oberfläche zeigt die Wahrscheinlichkeit, dass ein Datenpunkt zur positiven Klasse gehört, abhängig von den Werten x1 und x2.\
+Die probm-Matrix enthält diese Wahrscheinlichkeiten in einem Gitter.
+
+``` r
+```{r}
+cat("Step 1: Adding probability surface...\n")
+if(!exists("probm", where = dat)) {
+  dat$probm <- matrix(dat$prob, length(dat$px1), length(dat$px2))
+}
+
+fig <- fig %>% add_surface(
+  x = dat$px1,
+  y = dat$px2,
+  z = t(dat$probm),
+  colorscale = "Greys",
+  showscale = FALSE,
+  opacity = 0.8
+)
+fig
+```
+
+## Schritt 2: Hinzufügen der Entscheidungsebene
+
+Hier fügen wir eine horizontale Ebene bei z = 0.5 hinzu. Diese Ebene repräsentiert die Entscheidungsgrenze: Punkte oberhalb dieser Ebene werden einer Klasse zugeordnet, Punkte darunter der anderen.\
+Wir verwenden mesh3d, um ein Viereck darzustellen, das durch zwei Dreiecke definiert wird.
+
+Teil 1: Beweis, warum P(y=1|x) = 0.5 die Entscheidungsgrenze ist (Kurzform)
+Entscheidungsgrenze: P(y=1|x) = P(y=0|x)
+Wir wissen: P(y=0|x) = 1 - P(y=1|x)
+Einsetzen: P(y=1|x) = 1 - P(y=1|x)
+2 * P(y=1|x) = 1
+P(y=1|x) = 0.5
+
+Teil 2: Herleitung der Gleichung der Entscheidungsgrenze 
+
+P(y=1|x) = 1 / (1 + e^(-w^T x))
+
+P(y=1|x) = 0.5
+
+1 / (1 + e^(-w^T x)) = 0.5
+
+1 = 0.5 * (1 + e^(-w^T x))
+2 = 1 + e^(-w^T x)
+1 = e^(-w^T x)
+
+ln(1) = ln(e^(-w^T x))
+0 = -w^T x
+w^T x = 0
+
+Ergebnis: w^T x = 0
+
+``` r
+```{r}
+cat("Step 2: Adding decision plane...\n")
+x1r <- range(dat$px1)
+x2r <- range(dat$px2)
+
+plane_x <- c(x1r[1], x1r[2], x1r[2], x1r[1])
+plane_y <- c(x2r[1], x2r[1], x2r[2], x2r[2])
+plane_z_plane <- rep(plane_z_value, 4)
+
+fig <- fig %>% add_trace(
+  x = plane_x, y = plane_y, z = plane_z_plane,
+  i = c(0), j = c(1), k = c(2),
+  type = "mesh3d",
+  opacity = 0.4,
+  color = "gray"
+)
+fig
+```
+
+## Schritt 3: Hinzufügen der Datenpunkte
+
+Die ursprünglichen Datenpunkte werden nun auf der Entscheidungsebene (z = 0.5) dargestellt. Ihre Farbe (Orange oder Blau) zeigt ihre tatsächliche Klassenzugehörigkeit an. Dies hilft zu visualisieren, wie gut die Entscheidungsgrenze die Klassen trennt.
+
+Wenn Datenpunkte verschiedener Klassen genau auf der Entscheidungsgrenze liegen (wo 
+𝑃(𝑦=1∣𝑥)=0.5
+P(y=1∣x)=0.5 ist), bedeutet das, dass das Modell für diese Punkte maximal unsicher ist. Die Klassen überlappen sich im Merkmalsraum, sodass sie nicht klar getrennt werden können. Das kann zu Fehlklassifikationen führen, besonders bei linearen Modellen wie der logistischen Regression, deren Entscheidungsgrenze linear ist.
+
+Zur Lösung kann man neue oder transformierte Merkmale hinzufügen, komplexere nicht-lineare Modelle verwenden, Ausreißer prüfen oder den Klassifikationsschwellenwert anpassen. Manchmal ist aber auch eine gewisse Fehlerrate unvermeidbar (Bayes-Fehler).
+``` r
+```{r}
+cat("Step 3: Adding data points...\n")
+points_data <- data.frame(
+  x1 = dat$x[,1],
+  x2 = dat$x[,2],
+  z_points = rep(plane_z_value, length(dat$x[,1])),
+  class = ifelse(dat$y, "orange", "blue")
+)
+
+fig <- fig %>% add_trace(
+  data = points_data,
+  x = ~x1, y = ~x2, z = ~z_points,
+  type = "scatter3d",
+  mode = "markers",
+  marker = list(size = 5, color = ~class, opacity = 0.8)
+)
+fig
+```
+
+## Schritt 4: Hinzufügen des Begrenzungsrahmens
+
+Ein schwarzer Rahmen wird auf der Entscheidungsebene (z = 0.5) gezeichnet. Dieser Rahmen definiert den Bereich der x1- und x2-Koordinaten, für die die Wahrscheinlichkeiten berechnet wurden.
+
+``` r
+```{r}
+cat("Step 4: Adding bounding box...\n")
+box_x <- x1r[c(1,2,2,1,1)]
+box_y <- x2r[c(1,1,2,2,1)]
+box_z_lines <- rep(plane_z_value, 5)
+
+fig <- fig %>% add_trace(
+  x = box_x, y = box_y, z = box_z_lines,
+  type = "scatter3d",
+  mode = "lines",
+  line = list(color = "black", width = 3),
+  showlegend = FALSE
+)
+fig
+```
+
+## Schritt 5: Hinzufügen der Entscheidungsgrenze (Kontur)
+
+Die eigentliche Entscheidungsgrenze (wo die Wahrscheinlichkeit P(Y=1\|X) = 0.5 ist) wird als schwarze Linie auf der Entscheidungsebene dargestellt. Diese wird aus den Konturlinien der Wahrscheinlichkeitsoberfläche bei level=0.5 extrahiert.
+
+``` r
+```{r}
+cat("Step 5: Adding decision boundary contour...\n")
+if(!exists("cls", where = dat)) {
+  dat$cls <- with(dat, contourLines(px1, px2, probm, levels=0.5))
+}
+
+for(i in 1:length(dat$cls)) {
+  cont <- dat$cls[[i]]
+  fig <- fig %>% add_trace(
+    x = cont$x, y = cont$y, z = rep(plane_z_value, length(cont$x)),
+    type = "scatter3d",
+    mode = "lines",
+    line = list(color = "black", width = 3),
+    showlegend = FALSE
+  )
+}
+fig
+```
+
+## Schritt 6: Finale Layouteinstellungen
+
+Zuletzt passen wir das Layout der 3D-Szene an: Achsenbeschriftungen, Seitenverhältnis (aspectmode = "cube" für gleiche Skalierung), und die Kameraposition für eine gute initiale Ansicht.
+
+``` r
+```{r}
+cat("Step 6: Setting up layout and displaying final plot...\n")
+fig <- fig %>% layout(
+  scene = list(
+    aspectmode = "cube",
+    xaxis = list(title = "x1"),
+    yaxis = list(title = "x2"),
+    zaxis = list(title = "", range = c(0, 1.2)),
+    camera = list(
+      eye = list(x = 0, y = -2, z = 0.5)
+    )
+  )
+)
+fig
+```
+
+## Berechnung des Bayes-Fehlers
+
+Der Bayes-Fehler ist der theoretisch kleinstmögliche Fehler für dieses Klassifikationsproblem, gegeben die wahren Wahrscheinlichkeiten. Er wird hier berechnet und ausgegeben.
+
+``` r
+```{r}
+bayes.error <- sum(dat$marginal * (dat$prob * I(dat$prob < 0.5) + (1 - dat$prob) * I(dat$prob >= 0.5)))
+cat("Bayes error:", bayes.error, "\n")
+```

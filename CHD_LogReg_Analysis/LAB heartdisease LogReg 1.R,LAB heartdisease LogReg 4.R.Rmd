@@ -1,0 +1,467 @@
+---
+title: "LAB heartdisease LogReg 1.R,LAB heartdisease LogReg 4.R"
+author: "Behrooz Filzadeh"
+date: "2025-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+installed.packages("performance")
+library(data.table)
+library(ggplot2)
+library(leaps)
+library(glmnet)
+library(corrplot)
+library(GGally)
+library(psych)
+library(DataExplorer)
+library(performance)
+library(pROC)
+library(caret)
+library(knitr)
+library(kableExtra)
+```
+##Load Data
+```{r}
+heartdisease <- fread("SAheart.data")
+heartdisease[, famhist := as.factor(famhist)]
+
+# Überprüfen, ob es fehlende Werte (NA) in den Daten gibt.
+# Dieses Dataset ist normalerweise sauber,
+# aber es ist immer gut, das zur Sicherheit zu prüfen.
+sum(is.na(heartdisease))
+head(heartdisease, 3)
+
+```
+##3. Data Splitting: Train and Test Sets
+Erklärung: Der Datensatz wird in Trainingsdaten (70 %) und Testdaten (30 %) aufgeteilt.
+Es wird eine stratifizierte Stichprobe basierend auf der Variable 'chd' verwendet,
+um ähnliche Verteilungen des Outcomes in beiden Gruppen zu gewährleisten.
+Interpretation: Sollte ungefähr 70/30-Aufteilung zeigen und ähnliche 'chd'-Verteilungen
+
+```{r}
+set.seed(123)  # Für Reproduzierbarkeit der Aufteilung
+train_indices <- createDataPartition(heartdisease$chd, p = 0.7, list = FALSE)
+train_data <- heartdisease[train_indices, ]
+test_data <- heartdisease[-train_indices, ]
+
+# TODO: Überprüfen der Dimensionen und der Verteilung von 'chd' in beiden Datensätzen
+# Zeigt Anzahl der Zeilen und Spalten im Trainingsset
+print(dim(train_data)) 
+# Zeigt Anzahl der Zeilen und Spalten im Testset
+print(dim(test_data))  
+# Prozentuale Verteilung von 'chd' im Trainingsset
+print(prop.table(table(train_data$chd)))  
+# Prozentuale Verteilung von 'chd' im Testset
+print(prop.table(table(test_data$chd)))   
+```
+# 4. Data Preprocessing: Standardization (Scaling)
+ Erklärung:
+   Numerische Prädiktorvariablen werden standardisiert (Mittelwert = 0, SD = 1).
+   Die Variablen 'famhist' (kategorial) und 'chd' (Zielvariable) werden nicht skaliert.
+ Ziel:
+   - Vergleichbarkeit der Koeffizienten zwischen verschiedenen Variablen ermöglichen.
+   - Wichtig für L1- (LASSO) und L2- (Ridge) Regularisierung, da diese auf Koeffizientenbeträge abzielen.
+   - Hilfreich für die Konvergenz mancher Optimierungsalgorithmen.
+ Wichtig:
+   - Testdaten sollten mit den Skalierungsparametern (Mittelwert, SD) der Trainingsdaten skaliert werden.
+   - Dieses Skript skaliert beide unabhängig, was oft gemacht wird, aber technisch nicht korrekt ist.
+   - Im Folgenden zeigen wir die korrekte Vorgehensweise.
+```{r}
+# Zu skalierende numerische Variablen (ohne 'famhist' und 'chd')
+model_numeric_predictors <- c("sbp", "tobacco", "ldl", "obesity", "alcohol", "age")
+
+# --- Skalierung der Trainingsdaten ---
+# Mittelwert und Standardabweichung der Trainingsdaten berechnen
+train_means <- sapply(train_data[, ..model_numeric_predictors], mean)
+train_sds <- sapply(train_data[, ..model_numeric_predictors], sd)
+
+# Kopie der Trainingsdaten erstellen und skalieren
+heartdisease_train_scaled <- copy(train_data)
+for (col in model_numeric_predictors) {
+  heartdisease_train_scaled[, (col) := (get(col) - train_means[col]) / train_sds[col]]
+}
+
+# 'famhist' und 'chd' bleiben unverändert
+
+# --- Skalierung der Testdaten mit Trainingsparametern ---
+heartdisease_test_scaled <- copy(test_data)
+for (col in model_numeric_predictors) {
+  heartdisease_test_scaled[, (col) := (get(col) - train_means[col]) / train_sds[col]]
+}
+```
+ Interpretation:
+   - Die numerischen Prädiktoren in 'heartdisease_train_scaled' haben nun ~Mittelwert = 0 und ~SD = 1.
+   - In 'heartdisease_test_scaled' wurden die Trainingsparameter verwendet, also nicht exakt 0/1.
+   - 'famhist' bleibt ein Faktor, 'chd' bleibt die Zielvariable (0/1).
+Überprüfung der Skalierung 
+```{r}
+# Should be ~0
+ sapply(heartdisease_train_scaled[, ..model_numeric_predictors], mean)
+# Should be ~1
+ sapply(heartdisease_train_scaled[, ..model_numeric_predictors], sd)   
+# Will not be exactly 0
+ sapply(heartdisease_test_scaled[, ..model_numeric_predictors], mean)  
+# Will not be exactly 1
+ sapply(heartdisease_test_scaled[, ..model_numeric_predictors], sd)    
+```
+#5. Standard Logistic Regression (GLM)
+Erklärung: Ein logistisches Regressionsmodell wird mit den skalierten Trainingsdaten angepasst.
+Zweck: Ein Basislinienmodell erstellen und dessen Leistung mit regularisierten Modellen vergleichen.
+Wichtigkeit: Häufig verwendeter Ansatz für binäre Klassifikation.
+Modell verwendet 'sbp', 'tobacco', 'ldl', 'famhist', 'obesity', 'alcohol', 'age'.
+```{r}
+m_Largest_glm <- glm(chd ~ sbp + tobacco + ldl + famhist + obesity + alcohol + age, 
+                     family=binomial(), data=heartdisease_train_scaled)
+summary(m_Largest_glm)
+```
+ Interpretation (Modellzusammenfassung):
+   - Koeffizienten sind auf standardisierter Skala.
+   - Signifikanz der Prädiktoren kann beurteilt werden (z.B. tobacco, ldl, famhistPresent, age).
+   - AIC misst die Modellgüte unter Strafe für Komplexität.
+   
+# --- Vorhersage und Modellbewertung auf Testdaten (Generaliserungsfehler) ---
+ Erklärung: Das GLM wird auf neuen, ungesehenen Testdaten evaluiert.
+ Zweck: Abschätzung der Generalisierungsfähigkeit des Modells.
+ Wichtigkeit: Realistischere Bewertung als nur Trainingsdaten.
+```{r}
+# Vorhersage Wahrscheinlichkeiten
+probs_glm <- predict(m_Largest_glm, newdata=heartdisease_test_scaled, type="response")
+predicted_class_glm <- ifelse(probs_glm > 0.5, 1, 0)
+
+# Konfusionsmatrix
+actual_chd_test <- factor(heartdisease_test_scaled$chd, levels=c(0,1))
+predicted_class_glm_factor <- factor(predicted_class_glm, levels=c(0,1))
+cm_glm <- table(Predicted = predicted_class_glm_factor, Actual = actual_chd_test)
+print("GLM Konfusionsmatrix (Testdaten):")
+print(cm_glm)
+
+accuracy_glm <- mean(predicted_class_glm == heartdisease_test_scaled$chd)
+sensitivity_glm <- cm_glm[2,2] / sum(cm_glm[,2]) # TP / (TP+FN)
+specificity_glm <- cm_glm[1,1] / sum(cm_glm[,1]) # TN / (TN+FP)
+
+# Funktion zur Berechnung der Metriken inklusive AUC
+eval_metrics <- function(actual, probs, threshold=0.5) {
+    predicted <- ifelse(probs > threshold, 1, 0)
+    actual_f <- factor(actual, levels=c(0,1))
+    predicted_f <- factor(predicted, levels=c(0,1))
+    cm <- table(Actual=actual_f, Predicted=predicted_f)
+    
+    acc <- sum(diag(cm)) / sum(cm)
+    sens <- if(sum(cm[2,]) > 0) cm[2,2] / sum(cm[2,]) else 0
+    spec <- if(sum(cm[1,]) > 0) cm[1,1] / sum(cm[1,]) else 0
+    
+    roc_obj <- roc(response=actual, predictor=probs, quiet=TRUE)
+    auc_val <- as.numeric(auc(roc_obj))
+    
+    return(list(cm=cm, accuracy=acc, sensitivity=sens, specificity=spec, auc=auc_val, roc_obj=roc_obj))
+}
+
+eval_glm <- eval_metrics(heartdisease_test_scaled$chd, probs_glm)
+print(paste("GLM Genauigkeit:", eval_glm$accuracy))
+print(paste("GLM Sensitivität:", eval_glm$sensitivity))
+print(paste("GLM Spezifität:", eval_glm$specificity))
+
+# ROC Kurve
+roc_obj_glm <- roc(heartdisease_test_scaled$chd, probs_glm, quiet=TRUE)
+auc_glm <- auc(roc_obj_glm)
+print(paste("GLM AUC:", auc_glm))
+ plot(roc_obj_glm, main = "ROC Curve - GLM (Test Data)")
+ abline(a = 0, b = 1, lty = 2, col = "gray")
+ text(0.6, 0.2, paste("AUC =", round(auc_glm, 3)))
+```
+ Interpretation der Ergebnisse:
+   - Genauigkeit: z.B. ~0.74 (74% richtige Vorhersagen).
+   - Sensitivität: z.B. ~0.62 (62% der CHD-Fälle richtig erkannt).
+   - Spezifität: z.B. ~0.80 (80% der Nicht-CHD-Fälle richtig erkannt).
+   - AUC: z.B. ~0.79 (gute Unterscheidungsfähigkeit).
+   Diese Werte zeigen die Generalisierungsfähigkeit des Modells.
+
+# 6. Ridge Logistic Regression
+Erklärung: Ridge-Regression (L2-Regularisierung) fügt der Verlustfunktion eine Strafe
+proportional zur Summe der quadrierten Koeffizienten hinzu.
+Zweck: Robustere Modelle erstellen, Überanpassung verringern, Multikollinearität handhaben.
+Wichtigkeit: Regularisierung ist entscheidend für gute Generalisierung bei Testdaten.
+Hinweis: 'alpha=0' bedeutet Ridge-Regression in glmnet.
+```{r}
+# Vorbereitung der Daten für glmnet: Designmatrix (x) und Zielvariable (y)
+x_train <- model.matrix(chd ~ sbp + tobacco + ldl + famhist + obesity + alcohol + age, 
+                        data=heartdisease_train_scaled)[,-1]
+y_train <- heartdisease_train_scaled$chd
+
+# Ridge-Modell anpassen
+ridgeModel <- glmnet(x_train, y_train, alpha=0, family="binomial", standardize=FALSE)
+
+# Analyse des Ridge-Modells:
+# Visualisiert den Effekt von Lambda auf die Koeffizienten
+plot(ridgeModel, xvar="lambda")
+ # Gibt Lambdas, Freiheitsgrade und erklärte Devianz aus
+
+print(ridgeModel)
+# Koeffizienten bei einem festen Lambda (z.B. 0.05)
+lambda_ridge_fixed <- 0.05
+coef_ridge_fixed <- coef(ridgeModel, s=lambda_ridge_fixed)
+
+# --- Vorhersage und Bewertung auf Testdaten mit Ridge (lambda=0.05) ---
+x_test <- model.matrix(chd ~ sbp + tobacco + ldl + famhist + obesity + alcohol + age, 
+                       data=heartdisease_test_scaled)[,-1]
+
+probs_ridge_fixed <- predict(ridgeModel, newx=x_test, s=lambda_ridge_fixed, type="response")
+if(is.matrix(probs_ridge_fixed)) probs_ridge_fixed <- probs_ridge_fixed[,1]
+
+eval_ridge_fixed <- eval_metrics(heartdisease_test_scaled$chd, probs_ridge_fixed)
+print(paste("Ridge (lambda=0.05) Genauigkeit:", eval_ridge_fixed$accuracy))
+print(paste("Ridge (lambda=0.05) Sensitivität:", eval_ridge_fixed$sensitivity))
+print(paste("Ridge (lambda=0.05) Spezifität:", eval_ridge_fixed$specificity))
+print(paste("Ridge (lambda=0.05) AUC:", eval_ridge_fixed$auc))
+```
+ Interpretation:
+   - Ridge kann ähnliche oder leicht bessere Ergebnisse als das GLM liefern.
+   - z.B. Genauigkeit ~0.748, Sensitivität ~0.62, Spezifität ~0.81, AUC ~0.80
+   - Regulierung hilft bei der Stabilität des Modells auf neuen Daten.
+```{r}
+# TODO: Alternative Lambdas testen, z.B. lambda = 1
+ lambda_ridge_alt <- 1
+ probs_ridge_alt <- predict(ridgeModel, newx=x_test, s=lambda_ridge_alt, type="response")
+ if(is.matrix(probs_ridge_alt)) probs_ridge_alt <- probs_ridge_alt[,1]
+ eval_ridge_alt <- eval_metrics(heartdisease_test_scaled$chd, probs_ridge_alt)
+ print(paste("Ridge (lambda=", lambda_ridge_alt, ") AUC:", eval_ridge_alt$auc))
+```
+Test eines alternativen Lambda-Werts für Ridge (λ = 1)
+In diesem Schritt wird das Ridge-Modell mit einem höheren Regularisierungsparameter λ = 1 getestet.
+Ein größerer Lambda-Wert führt zu stärkerer Schrumpfung der Koeffizienten in Richtung Null.
+Das kann Overfitting reduzieren, aber bei zu großem Lambda auch zu Underfitting führen.
+Das Modell wird anhand des AUC-Werts bewertet.
+Ein niedrigerer AUC-Wert im Vergleich zu kleineren Lambda-Werten könnte auf Informationsverlust durch übermäßige Regularisierung hinweisen.
+
+
+```{r}
+ #TODO: LASSO Regression ausprobieren (alpha=1)
+ lassoModel <- glmnet(x_train, y_train, alpha=1, family="binomial", standardize=FALSE)
+ lambda_lasso_fixed <- 0.01
+ probs_lasso_fixed <- predict(lassoModel, newx=x_test, s=lambda_lasso_fixed, type="response")
+ if(is.matrix(probs_lasso_fixed)) probs_lasso_fixed <- probs_lasso_fixed[,1]
+ eval_lasso_fixed <- eval_metrics(heartdisease_test_scaled$chd, probs_lasso_fixed)
+ print(paste("LASSO (lambda=", lambda_lasso_fixed, ") AUC:", eval_lasso_fixed$auc))
+ coef(lassoModel, s=lambda_lasso_fixed)
+
+# Hinweis: LASSO kann einige Koeffizienten exakt auf Null setzen (Variable Selection).
+# Dies verbessert die Interpretierbarkeit und ist nützlich bei redundanten Prädiktoren.
+```
+LASSO-Regression (α = 1, λ = 0.01)
+Hier wird eine LASSO-Regression durchgeführt, wobei α = 1 gesetzt wird (L1-Regularisierung).
+LASSO hat die Fähigkeit, einzelne Koeffizienten exakt auf Null zu setzen, was eine automatische Variablenselektion ermöglicht.
+Das ist besonders hilfreich bei vielen korrelierten oder irrelevanten Prädiktoren.
+Ein kleiner Lambda-Wert wie λ = 0.01 bedeutet eine schwache Regularisierung, vergleichbar mit einem klassischen GLM.
+Die Modellbewertung erfolgt wieder über Metriken wie Accuracy, Sensitivität, Spezifität und AUC.
+
+| Modelltyp        | Regularisierung | Lambda     | Vorteile                                    | Nachteile                             |
+|------------------|------------------|------------|---------------------------------------------|----------------------------------------|
+| Standard-GLM     | Keine            | –          | Einfach, direkt interpretierbar             | Anfällig für Overfitting               |
+| Ridge-Regression | L2 (α = 0)       | 0.05 / 1.0 | Gut bei Multikollinearität, stabil          | Keine automatische Variablenselektion |
+| LASSO-Regression | L1 (α = 1)       | 0.01       | Selektiert relevante Variablen automatisch  | Kann wichtige Variablen entfernen     |
+
+
+###Übung 2: Specific Tasks for LAB heartdisease LogReg 4.R
+
+```{r}
+# (Angenommen, dass der gesamte vorherige Code aus LAB heartdisease LogReg 4.R 
+# bis einschließlich der Definitionen von x_train, y_train, x_test, heartdisease_test_scaled$chd,
+# m_Largest_glm, ridgeModel und eval_metrics-Funktion bereits ausgeführt wurde)
+
+# Für Reproduzierbarkeit der Aufgaben b, c, d
+set.seed(456)
+
+# --- Aufgabe a) Alle Leistungskennzahlen in einer Tabelle zusammenfassen ---
+# Bisher betrachtete Modelle:
+# 1. Standard Logistische Regression (m_Largest_glm)
+# 2. Ridge Regression (lambda = 0.05, aus dem ursprünglichen Skript)
+
+# Metriken für GLM (bereits berechnet als eval_glm)
+# eval_glm enthält: accuracy, sensitivity, specificity, auc
+
+# Metriken für Ridge (lambda = 0.05, fest) (bereits berechnet als eval_ridge_fixed)
+# eval_ridge_fixed enthält: accuracy, sensitivity, specificity, auc
+
+# --- Aufgabe b) Ridge Regression mit einem anderen (frei gewählten) Lambda trainieren ---
+lambda_ridge_b <- 0.1 # Frei gewähltes Lambda, verschieden von 0.05
+
+# Vorhersagen
+probs_ridge_b <- predict(ridgeModel, newx = x_test, s = lambda_ridge_b, type="response")
+if(is.matrix(probs_ridge_b)) probs_ridge_b <- probs_ridge_b[,1] # Sicherstellen, dass es ein Vektor ist
+
+# Bewertung
+eval_ridge_b <- eval_metrics(heartdisease_test_scaled$chd, probs_ridge_b)
+
+# --- Aufgabe c) Ridge Regression mit Lambda aus Kreuzvalidierung trainieren ---
+# cv.glmnet auf Trainingsdaten anwenden
+cv_ridge_model <- cv.glmnet(x_train, y_train, alpha=0, family="binomial", standardize=FALSE, type.measure="auc", nfolds=10)
+# Zum Visualisieren der CV-Ergebnisse
+plot(cv_ridge_model) 
+
+# Optimales Lambda (lambda.min ergibt bestes AUC, lambda.1se ist stärker regularisiert, aber innerhalb 1 SE)
+lambda_cv_min <- cv_ridge_model$lambda.min
+# lambda_cv_1se <- cv_ridge_model$lambda.1se # Alternative
+
+print(paste("Optimales Lambda (lambda.min) aus CV:", lambda_cv_min))
+
+# Vorhersagen mit lambda.min
+probs_ridge_cv <- predict(cv_ridge_model, newx = x_test, s = "lambda.min", type="response")
+if(is.matrix(probs_ridge_cv)) probs_ridge_cv <- probs_ridge_cv[,1] # Sicherstellen, dass es ein Vektor ist
+
+# Bewertung
+eval_ridge_cv <- eval_metrics(heartdisease_test_scaled$chd, probs_ridge_cv)
+
+# Tabelle für Aufgabe (a) zusammenstellen, einschließlich Modelle aus (b) und (c)
+
+performance_data <- data.frame(
+  Modell = character(),
+  Lambda = character(),
+  Genauigkeit = numeric(),
+  Sensitivität = numeric(),
+  Spezifität = numeric(),
+  AUC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# GLM
+performance_data <- rbind(performance_data, data.frame(
+  Modell = "Standard GLM",
+  Lambda = "N/A",
+  Genauigkeit = eval_glm$accuracy,
+  Sensitivität = eval_glm$sensitivity,
+  Spezifität = eval_glm$specificity,
+  AUC = eval_glm$auc
+))
+
+# Ridge (lambda = 0.05 - original)
+performance_data <- rbind(performance_data, data.frame(
+  Modell = "Ridge",
+  Lambda = "0.05 (Fest)",
+  Genauigkeit = eval_ridge_fixed$accuracy,
+  Sensitivität = eval_ridge_fixed$sensitivity,
+  Spezifität = eval_ridge_fixed$specificity,
+  AUC = eval_ridge_fixed$auc
+))
+
+# Ridge (lambda = 0.1 - Aufgabe b)
+performance_data <- rbind(performance_data, data.frame(
+  Modell = "Ridge",
+  Lambda = paste(round(lambda_ridge_b,4), "(Gewählt)"),
+  Genauigkeit = eval_ridge_b$accuracy,
+  Sensitivität = eval_ridge_b$sensitivity,
+  Spezifität = eval_ridge_b$specificity,
+  AUC = eval_ridge_b$auc
+))
+
+# Ridge (lambda aus CV - Aufgabe c)
+performance_data <- rbind(performance_data, data.frame(
+  Modell = "Ridge",
+  Lambda = paste(round(lambda_cv_min,4), "(CV min)"),
+  Genauigkeit = eval_ridge_cv$accuracy,
+  Sensitivität = eval_ridge_cv$sensitivity,
+  Spezifität = eval_ridge_cv$specificity,
+  AUC = eval_ridge_cv$auc
+))
+
+# ... (Vorheriger Code zum Erstellen von performance_data) ...
+
+print("--- Performance-Tabelle ---")
+# Für eine bessere Darstellung der Tabelle in RMarkdown kann kable verwendet werden
+if (require(knitr) && require(kableExtra)) {
+  knitr::kable(performance_data, caption = "Leistungsmetriken der Modelle") %>%
+    kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+} else {
+  print(performance_data) # Fallback auf einfache Ausgabe
+}
+
+# --- Aufgabe d) Zwei einflussreichste Prädiktoren im Modell mit höchstem AUC identifizieren ---
+# Modell mit höchstem AUC aus der Tabelle finden
+best_auc_model_row <- performance_data[which.max(performance_data$AUC), ]
+print("--- Modell mit höchstem AUC ---")
+print(best_auc_model_row)
+
+# Koeffizienten des besten Modells abrufen
+best_model_name <- best_auc_model_row$Modell
+best_model_lambda_str <- best_auc_model_row$Lambda
+
+cat("\n--- Identifikation der einflussreichsten Prädiktoren für das Modell mit dem höchsten AUC ---\n")
+cat("Bestes Modell:", best_model_name, "\n")
+cat("Lambda-Information:", best_model_lambda_str, "\n")
+
+coefs_best_model <- NULL
+if (best_model_name == "Standard GLM") {
+    coefs_best_model <- coef(m_Largest_glm)
+} else if (best_model_name == "Ridge") {
+    if (grepl("CV min", best_model_lambda_str)) {
+        coefs_best_model <- coef(cv_ridge_model, s = "lambda.min")
+    } else if (grepl("0.05", best_model_lambda_str)) {
+        coefs_best_model <- coef(ridgeModel, s = 0.05)
+    } else if (grepl(as.character(round(lambda_ridge_b,4)), best_model_lambda_str)) {
+         coefs_best_model <- coef(ridgeModel, s = lambda_ridge_b)
+    } else {
+        stop("Konnte Koeffizienten des besten Ridge-Modells anhand der Lambda-Angabe nicht identifizieren.")
+    }
+}
+
+if (!is.null(coefs_best_model)) {
+    print("Koeffizienten des besten Modells:")
+    print(coefs_best_model)
+    
+    # Intercept ausschließen und als benannten Vektor extrahieren
+    predictor_coefs <- as.matrix(coefs_best_model)[-1, 1]
+    
+    # Beträge für die Einflussbewertung nehmen
+    abs_coefs <- abs(predictor_coefs)
+    
+    # Nach absteigendem Betrag sortieren
+    sorted_coefs <- sort(abs_coefs, decreasing = TRUE)
+    
+    print("Prädiktoren sortiert nach absoluter Koeffizientenstärke (Einfluss):")
+    print(sorted_coefs)
+    
+    # Zwei einflussreichste Prädiktoren identifizieren
+    most_influential_predictors <- names(sorted_coefs)[1:2]
+    
+    cat("\nDie zwei einflussreichsten Prädiktoren sind:\n")
+    cat("1.", most_influential_predictors[1], "mit Koeffizient:", predictor_coefs[most_influential_predictors[1]], "\n")
+    cat("2.", most_influential_predictors[2], "mit Koeffizient:", predictor_coefs[most_influential_predictors[2]], "\n")
+    
+    # Begründung und Interpretation
+    cat("\nBegründung:\n")
+    cat("Diese Prädiktoren wurden gewählt, da ihre Koeffizienten im besten Modell (basierend auf AUC) den größten absoluten Wert haben. Da die numerischen Prädiktoren standardisiert wurden, sind ihre Koeffizienten direkt vergleichbar und zeigen die relative Bedeutung für die Vorhersage der CHD-Wahrscheinlichkeit.\n")
+    
+    cat("\nInterpretation der Beziehung zum Ziel (chd):\n")
+    
+    # Prädiktor 1
+    predictor1_name <- most_influential_predictors[1]
+    predictor1_coef_val <- predictor_coefs[predictor1_name]
+    relationship1 <- ifelse(predictor1_coef_val > 0, "erhöht", "verringert")
+    cat(" - Für", predictor1_name, "(Koeffizient =", round(predictor1_coef_val, 3), "):\n")
+    if (grepl("famhist", predictor1_name)) {
+        cat("   Eine positive Familienanamnese (famhistPresent)", relationship1, "erheblich die Log-Odds (und damit die Wahrscheinlichkeit) für CHD im Vergleich zu keiner Familienanamnese, bei konstant gehaltenen anderen Faktoren.\n")
+    } else {
+        cat("   Eine Erhöhung um eine Standardabweichung in", predictor1_name, relationship1, "die Log-Odds für CHD um ca.", round(predictor1_coef_val, 3), ", bei konstanten anderen Faktoren. Das bedeutet: Höhere Werte von", predictor1_name, "sind mit einer", ifelse(relationship1=="erhöht","höheren","niedrigeren"), "Wahrscheinlichkeit für CHD verbunden.\n")
+    }
+    
+    # Prädiktor 2
+    predictor2_name <- most_influential_predictors[2]
+    predictor2_coef_val <- predictor_coefs[predictor2_name]
+    relationship2 <- ifelse(predictor2_coef_val > 0, "erhöht", "verringert")
+    cat(" - Für", predictor2_name, "(Koeffizient =", round(predictor2_coef_val, 3), "):\n")
+     if (grepl("famhist", predictor2_name)) {
+        cat("   Eine positive Familienanamnese (famhistPresent)", relationship2, "erheblich die Log-Odds (und damit die Wahrscheinlichkeit) für CHD im Vergleich zu keiner Familienanamnese, bei konstant gehaltenen anderen Faktoren.\n")
+    } else {
+        cat("   Eine Erhöhung um eine Standardabweichung in", predictor2_name, relationship2, "die Log-Odds für CHD um ca.", round(predictor2_coef_val, 3), ", bei konstanten anderen Faktoren. Das bedeutet: Höhere Werte von", predictor2_name, "sind mit einer", ifelse(relationship2=="erhöht","höheren","niedrigeren"), "Wahrscheinlichkeit für CHD verbunden.\n")
+    }
+} else {
+    cat("Konnte die Koeffizienten des besten Modells nicht abrufen, um die einflussreichsten Prädiktoren zu bestimmen.\n")
+}
+```
+
+
+

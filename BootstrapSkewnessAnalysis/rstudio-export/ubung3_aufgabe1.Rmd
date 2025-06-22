@@ -1,0 +1,119 @@
+
+---
+title: "Skewness Analysis of Petal Width (Versicolor)"
+author: "Behrooz Filzadeh"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Introduction
+
+Ich möchte in diesem Bericht die (Skewness) der Variable Petal.Width aus dem Datensatz iris mit der Bootstrap-Methode analysieren.
+
+---
+
+### a) Understanding Skewness
+Skewness ist ein Maß dafür, ob die Verteilung von Daten symmetrisch ist oder nicht.
+Wenn Skewness positiv ist, dann hat die Verteilung einen langen Schwanz nach rechts (zu große Werte).
+Wenn Skewness negativ ist, dann geht der Schwanz nach links (zu kleine Werte).
+Wenn Skewness null ist, dann ist die Verteilung symmetrisch.
+ich benutze die Funktion skew() aus dem Paket psych, weil sie einfach die Schiefe von den Daten berechnet. Das hilft mir zu verstehen, ob die Daten normal verteilt sind oder nicht. Wenn die Verteilung nicht symmetrisch ist, müssen wir vielleicht andere Methoden benutzen oder die Daten verändern.
+
+---
+
+### b) Bootstrap of Skewness
+
+```{r}
+# Ich lade die Pakete, die ich brauche:
+# - "psych" für die Berechnung von Skewness (Schiefe)
+# - "ggplot2" für schöne Diagramme
+library(psych)
+library(ggplot2)
+
+# Ich nehme nur die Daten von der Art "versicolor" aus dem iris-Datensatz.
+versicolor_data <- subset(iris, Species == "versicolor")
+
+# Ich wähle nur die Spalte "Petal.Width" (Blütenblatt-Breite).
+petal_width <- versicolor_data$Petal.Width
+
+# Ich berechne die ursprüngliche Skewness der Daten.
+# Skewness zeigt, ob die Werte mehr nach rechts oder links verteilt sind.
+original_skew <- skew(petal_width)
+original_skew  # Das ist die ursprüngliche Schiefe
+```{r}
+# Jetzt mache ich eine Bootstrap-Analyse mit 1000 Wiederholungen.
+# Das bedeutet: Ich ziehe 1000-mal Stichproben mit Zurücklegen.
+# Für jede Stichprobe berechne ich die Skewness.
+set.seed(123)  # Damit bekomme ich jedes Mal die gleichen Ergebnisse (Zufallskontrolle)
+B <- 1000  # Anzahl der Wiederholungen
+bootstrap_skews <- replicate(B, {
+  sample_data <- sample(petal_width, replace = TRUE)  # Ich ziehe eine Stichprobe mit Zurücklegen
+  skew(sample_data)  # Ich berechne die Skewness dieser Stichprobe
+})
+
+# Ich zeichne ein Histogramm (Balkendiagramm) mit den 1000 Skewness-Werten.
+# Das zeigt, wie die geschätzten Skewness-Werte verteilt sind.
+hist(bootstrap_skews, breaks = 30, 
+     main = "Bootstrap-Verteilung der Schiefe", 
+     xlab = "Skewness", col = "skyblue", border = "white")
+
+# Ich berechne die Standardabweichung der 1000 Bootstrap-Skewness-Werte.
+# Das zeigt, wie stark die Werte schwanken.
+sd_boot <- sd(bootstrap_skews)
+sd_boot  # Das ist die Streuung der Skewness
+
+# Ich berechne das 95%-Konfidenzintervall.
+# Das zeigt den Bereich, in dem die „wahre“ Skewness mit 95% Sicherheit liegt.
+ci <- quantile(bootstrap_skews, c(0.025, 0.975))
+ci
+
+```
+
+---
+
+### c) Interpretation
+
+The estimated skewness is:
+```{r}
+original_skew
+```
+
+The bootstrap standard deviation is:
+```{r}
+sd_boot
+```
+
+The 95% confidence interval for the skewness is:
+```{r}
+ci
+```
+
+Wenn die Skewness positiv ist, bedeutet das, dass die Verteilung leicht nach rechts verschoben ist.
+
+Wenn das 95%-Konfidenzintervall 0 einschließt, könnte die Verteilung symmetrisch sein.
+
+Das Histogramm hilft uns, visuell zu sehen, ob die Verteilung schief ist oder nicht.
+
+Lass uns die Variable noch einmal visualisieren:
+
+```{r}
+# Density plot
+ggplot(versicolor_data, aes(x = Petal.Width)) +
+  geom_histogram(aes(y = ..density..), bins = 15, fill = "lightgreen", color = "black") +
+  geom_density(color = "darkgreen", size = 1) +
+  labs(title = "Distribution of Petal Width for Versicolor",
+       x = "Petal Width", y = "Density")
+```
+
+---
+
+### Bonus: Interpretation des Konfidenzintervalls
+
+Das Konfidenzintervall zeigt den Bereich von Skewness-Werten, die ich aufgrund der Stichprobenvariation erwarten kann.
+
+Wenn das Intervall eng ist und null ausschließt, kann ich mit hoher Sicherheit sagen, dass die Verteilung schief ist.
+
+Wenn das Intervall null enthält, gibt es nicht genug Beweise, um eine Schiefe zu bestätigen.

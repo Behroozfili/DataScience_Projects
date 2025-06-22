@@ -1,0 +1,29 @@
+---
+title: "eda_mtcars"
+author: "behrooz"
+date: "2024-05-24"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# تنظیمات کلی و لود کتابخانه
+knitr::opts_chunk$set(echo = TRUE)  # کدها به صورت پیش‌فرض در خروجی نمایش داده شوند
+library(data.table)
+
+# Load the dataset using data.table
+mtcars_dt <- fread("mtcars.csv")
+
+# Identify numeric columns (excluding the first 'CarModel' column)
+numeric_cols <- names(mtcars_dt)[-1]  # فرض بر اینکه ستون اول غیرعددی است
+
+# Ensure numeric_cols are indeed numeric
+mtcars_dt[, (numeric_cols) := lapply(.SD, as.numeric), .SDcols = numeric_cols]
+
+# Store numeric data separately (اختیاری)
+numeric_data <- mtcars_dt[, ..numeric_cols]
+
+# Print preview of the dataset
+print(head(mtcars_dt))
+cat("Dimensions:", dim(mtcars_dt), "\n")
+cat("Column Names:", paste(names(mtcars_dt), collapse = ","), "\n")
+cat("Numeric Columns for Analysis:", paste(numeric_cols, collapse = ","), "\n")
